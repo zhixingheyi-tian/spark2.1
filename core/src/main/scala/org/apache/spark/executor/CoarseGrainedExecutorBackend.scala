@@ -177,6 +177,7 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
   private def run(
       driverUrl: String,
       executorId: String,
+      numaNodeId: Option[Int],
       hostname: String,
       cores: Int,
       appId: String,
@@ -221,7 +222,8 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
       }
 
       val env = SparkEnv.createExecutorEnv(
-        driverConf, executorId, hostname, port, cores, cfg.ioEncryptionKey, isLocal = false)
+        driverConf, executorId, numaNodeId, hostname, port,
+        cores, cfg.ioEncryptionKey, isLocal = false)
 
       env.rpcEnv.setupEndpoint("Executor", new CoarseGrainedExecutorBackend(
         env.rpcEnv, driverUrl, executorId, hostname, cores, userClassPath, env))
@@ -239,6 +241,7 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
     var hostname: String = null
     var cores: Int = 0
     var appId: String = null
+    var numaNodeId: Option[Int] = null
     var workerUrl: Option[String] = None
     val userClassPath = new mutable.ListBuffer[URL]()
 
@@ -259,6 +262,9 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
           argv = tail
         case ("--app-id") :: value :: tail =>
           appId = value
+          argv = tail
+        case ("--numa-node-id") :: value :: tail =>
+          numaNodeId = Some(value.trim.toInt)
           argv = tail
         case ("--worker-url") :: value :: tail =>
           // Worker url is used in spark standalone mode to enforce fate-sharing with worker
@@ -281,7 +287,7 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
       printUsageAndExit()
     }
 
-    run(driverUrl, executorId, hostname, cores, appId, workerUrl, userClassPath)
+    run(driverUrl, executorId, numaNodeId, hostname, cores, appId, workerUrl, userClassPath)
     System.exit(0)
   }
 
@@ -295,6 +301,7 @@ private[spark] object CoarseGrainedExecutorBackend extends Logging {
       |   --driver-url <driverUrl>
       |   --executor-id <executorId>
       |   --hostname <hostname>
+      |   --numa-node-id <numaNodeId>
       |   --cores <cores>
       |   --app-id <appid>
       |   --worker-url <workerUrl>
