@@ -50,6 +50,7 @@ private[yarn] class ExecutorRunnable(
     masterAddress: String,
     executorId: String,
     hostname: String,
+    numaNodeId: Option[Int],
     executorMemory: Int,
     executorCores: Int,
     appId: String,
@@ -70,6 +71,7 @@ private[yarn] class ExecutorRunnable(
   def launchContextDebugInfo(): String = {
     val commands = prepareCommand()
     val env = prepareEnvironment()
+    logInfo(s"the command is $commands")
 
     s"""
     |===============================================================================
@@ -206,9 +208,19 @@ private[yarn] class ExecutorRunnable(
       Seq("--user-class-path", "file:" + absPath)
     }.toSeq
 
+    val numaEnabled = sparkConf.get(SPARK_YARN_NUMA_ENABLED)
+    // Don't need numa binding for driver.
+    val (numaCtlCommand, numaNodeOpts) = if (numaEnabled && executorId != "<executorId>"
+      && numaNodeId.nonEmpty) {
+      val command = s"numactl --cpubind=${numaNodeId.get} --membind=${numaNodeId.get} "
+      (command, Seq("--numa-node-id", numaNodeId.get.toString))
+    } else {
+      ("", Nil)
+    }
+
     YarnSparkHadoopUtil.addOutOfMemoryErrorArgument(javaOpts)
     val commands = prefixEnv ++ Seq(
-      YarnSparkHadoopUtil.expandEnvironment(Environment.JAVA_HOME) + "/bin/java",
+      numaCtlCommand + Environment.JAVA_HOME.$$() + "/bin/java",
       "-server") ++
       javaOpts ++
       Seq("org.apache.spark.executor.CoarseGrainedExecutorBackend",
@@ -217,10 +229,12 @@ private[yarn] class ExecutorRunnable(
         "--hostname", hostname,
         "--cores", executorCores.toString,
         "--app-id", appId) ++
+      numaNodeOpts ++
       userClassPath ++
       Seq(
         s"1>${ApplicationConstants.LOG_DIR_EXPANSION_VAR}/stdout",
         s"2>${ApplicationConstants.LOG_DIR_EXPANSION_VAR}/stderr")
+    logInfo(s"the command is $commands")
 
     // TODO: it would be nicer to just make sure there are no null commands here
     commands.map(s => if (s == null) "null" else s).toList

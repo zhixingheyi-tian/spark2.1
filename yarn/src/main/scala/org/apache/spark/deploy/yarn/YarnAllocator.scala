@@ -57,6 +57,7 @@ import org.apache.spark.util.{Clock, SystemClock, ThreadUtils}
  * The public methods of this class are thread-safe.  All methods that mutate state are
  * synchronized.
  */
+
 private[yarn] class YarnAllocator(
     driverUrl: String,
     driverRef: RpcEndpointRef,
@@ -69,6 +70,9 @@ private[yarn] class YarnAllocator(
   extends Logging {
 
   import YarnAllocator._
+
+
+
 
   // RackResolver logs an INFO message whenever it resolves a rack, which is way too often.
   if (Logger.getLogger(classOf[RackResolver]).getLevel == null) {
@@ -172,6 +176,14 @@ private[yarn] class YarnAllocator(
   // A container placement strategy based on pending tasks' locality preference
   private[yarn] val containerPlacementStrategy =
     new LocalityPreferredContainerPlacementStrategy(sparkConf, conf, resource)
+
+  // Mapping from host to executor counter, we use the counter with a round-robin mode to
+  // determine the numa node id that the executor should bind.
+  private[yarn] val hostToNuma = new mutable.HashMap[String, Int]()
+
+  private[yarn] case class NumaInfo(cotainer2numa: mutable.HashMap[String, Int], numaUsed: Array[Boolean])
+
+  private[yarn] val hostToNumaInfo = new mutable.HashMap[String, NumaInfo]()
 
   /**
    * Use a different clock for YarnAllocator. This is mainly used for testing.
@@ -489,6 +501,40 @@ private[yarn] class YarnAllocator(
     for (container <- containersToUse) {
       executorIdCounter += 1
       val executorHostname = container.getNodeId.getHost
+
+      // Setting the numa id that the executor should binding. Just round robin from 0 to
+      // totalNumaNumber for each host.
+      // TODO: This is very ugly, however this is should be processed in resource
+      // manager(such as yarn).
+      val preSize = hostToNuma.getOrElseUpdate(executorHostname, 0)
+      var numaNodeId = preSize % 2
+      hostToNuma.put(executorHostname, preSize + 1)
+      logInfo(s"old  numaNodeId: $numaNodeId on host $executorHostname")
+
+      var newnumaNodeId = -1
+      // new numaid binding
+      val numaInfo = hostToNumaInfo.getOrElseUpdate(executorHostname,
+        NumaInfo(new mutable.HashMap[String, Int], Array(false,false)))
+      logInfo("numaInfo.numaUsed(0): " + numaInfo.numaUsed(0))
+      var i = 0
+      var boolbreak = true
+      // avoid using keyword break
+      while(i < 2 && boolbreak) {
+        logInfo(s"i: $i")
+        logInfo(s"numaInfo.numaUsed($i): " + numaInfo.numaUsed(i))
+        val numabool = numaInfo.numaUsed(i)
+        if(!numabool) {
+          newnumaNodeId = i
+          numaInfo.cotainer2numa.put(container.getId.toString, newnumaNodeId)
+          numaInfo.numaUsed(i) = true
+//          break
+          boolbreak = false
+        }
+        i = i+1
+      }
+
+      numaNodeId = newnumaNodeId
+      logInfo(s"new  numaNodeId: $newnumaNodeId on host $executorHostname," + container.getId.toString)
       val containerId = container.getId
       val executorId = executorIdCounter.toString
       assert(container.getResource.getMemory >= resource.getMemory)
@@ -517,6 +563,7 @@ private[yarn] class YarnAllocator(
                   driverUrl,
                   executorId,
                   executorHostname,
+                  Some(numaNodeId),
                   executorMemory,
                   executorCores,
                   appAttemptId.getApplicationId.toString,
@@ -585,9 +632,21 @@ private[yarn] class YarnAllocator(
           case _ =>
             // Enqueue the timestamp of failed executor
             failedExecutorsTimeStamps.enqueue(clock.getTimeMillis())
+            var numaNodeId = -1
+            val hostName = hostOpt.getOrElse("nohost")
+            val numaInfoOp = hostToNumaInfo.get(hostName)
+            numaInfoOp match {
+              case Some(numaInfo) =>
+                numaNodeId = numaInfo.cotainer2numa.get(containerId.toString).getOrElse(-1)
+                if(-1 != numaNodeId) numaInfo.numaUsed(numaNodeId) = false
+              case _ => -1
+            }
+
             (true, "Container marked as failed: " + containerId + onHostStr +
               ". Exit status: " + completedContainer.getExitStatus +
-              ". Diagnostics: " + completedContainer.getDiagnostics)
+              ". Diagnostics: " + completedContainer.getDiagnostics +
+              ". numaNodeId: " + numaNodeId +
+              ". hostName: " + hostName)
 
         }
         if (exitCausedByApp) {

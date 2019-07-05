@@ -174,6 +174,7 @@ object SparkEnv extends Logging {
     create(
       conf,
       SparkContext.DRIVER_IDENTIFIER,
+      None,
       bindAddress,
       advertiseAddress,
       port,
@@ -192,6 +193,7 @@ object SparkEnv extends Logging {
   private[spark] def createExecutorEnv(
       conf: SparkConf,
       executorId: String,
+      numaNodeId: Option[Int],
       hostname: String,
       port: Int,
       numCores: Int,
@@ -200,6 +202,7 @@ object SparkEnv extends Logging {
     val env = create(
       conf,
       executorId,
+      numaNodeId,
       hostname,
       hostname,
       port,
@@ -214,9 +217,11 @@ object SparkEnv extends Logging {
   /**
    * Helper method to create a SparkEnv for a driver or an executor.
    */
+  // scalastyle:off
   private def create(
       conf: SparkConf,
       executorId: String,
+      numaNodeId: Option[Int],
       bindAddress: String,
       advertiseAddress: String,
       port: Int,
@@ -225,7 +230,7 @@ object SparkEnv extends Logging {
       ioEncryptionKey: Option[Array[Byte]],
       listenerBus: LiveListenerBus = null,
       mockOutputCommitCoordinator: Option[OutputCommitCoordinator] = None): SparkEnv = {
-
+    // scalastyle:on
     val isDriver = executorId == SparkContext.DRIVER_IDENTIFIER
 
     // Listener bus is only used on the driver
